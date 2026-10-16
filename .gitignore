@@ -1,0 +1,17 @@
+# 個人資料與執行時產生的檔案（不公開）
+config.json
+config.*.tmp
+history.db
+*.log
+heartbeat
+HANDOFF.md
+
+# 第三方程式拆解的參考資料，不可散布
+typeless-參考/
+
+# 環境與建置產物
+.venv/
+__pycache__/
+build/
+dist/
+build_log.txt

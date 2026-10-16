@@ -1,0 +1,31 @@
+{
+  "whisper_model": "large-v3",
+  "whisper_device": "cuda",
+  "whisper_compute_type": "float16",
+  "ollama_url": "http://127.0.0.1:11434/api/chat",
+  "ollama_model": "qwen3.5:9b",
+  "hotkeys": {
+    "right alt": "cleanup",
+    "f10": "formal"
+  },
+  "beep": true,
+  "min_seconds": 0.4,
+  "dictionary": [],
+  "translate": false,
+  "app_tones": {
+    "outlook.exe": "formal",
+    "olk.exe": "formal",
+    "thunderbird.exe": "formal",
+    "line.exe": "chat",
+    "linelauncher.exe": "chat",
+    "ms-teams.exe": "chat",
+    "teams.exe": "chat",
+    "discord.exe": "chat",
+    "slack.exe": "chat",
+    "telegram.exe": "chat",
+    "whatsapp.exe": "chat",
+    "messenger.exe": "chat"
+  },
+  "history": true,
+  "history_keep_days": 30
+}

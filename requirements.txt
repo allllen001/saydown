@@ -1,0 +1,13 @@
+faster-whisper
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+nvidia-cuda-nvrtc-cu12
+keyboard
+numpy
+pillow
+pystray
+requests
+sounddevice
+opencc-python-reimplemented
+comtypes
+pypdf

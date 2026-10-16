@@ -1,4 +1,4 @@
-"""打包 Saydown：PyInstaller 產生 dist/Saydown，再用 Inno Setup 做成安裝檔。
+r"""打包 Saydown：PyInstaller 產生 dist/Saydown，再用 Inno Setup 做成安裝檔。
 
 在專案根目錄執行：.venv\Scripts\python.exe packaging\build.py
 """

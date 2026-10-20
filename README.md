@@ -20,7 +20,30 @@
 
 安裝版的設定、詞庫、歷史紀錄、記錄檔都存在 `%APPDATA%\Saydown`，解除安裝不會刪除。
 
+### 在新電腦上安裝
+
+1. **確認顯示卡驅動**：裝好最新的 NVIDIA 顯示卡驅動程式。
+2. **安裝 Ollama 與修稿模型**：從 [ollama.com](https://ollama.com) 下載安裝 Ollama，裝好後開啟命令提示字元執行：
+
+   ```
+   ollama pull qwen3.5:9b
+   ```
+
+3. **下載 Saydown**：到 [最新版 Release](https://github.com/allllen001/saydown/releases/latest) 下載 `Saydown-Setup-<版本>.exe`。
+4. **執行安裝檔**：若出現 Windows SmartScreen 警告，按「其他資訊」→「仍要執行」。依需要勾選「建立桌面捷徑」「開機自動啟動」。
+5. **第一次啟動**：Saydown 會自動下載 Whisper large-v3 模型（約 3 GB），請保持網路連線並等它下載完。系統匣圖示由灰色變成綠色後即可使用。
+6. **選麥克風**：系統匣圖示按右鍵 →「麥克風」，選擇要用的麥克風。
+
+**從舊電腦搬設定（可選）**：先在兩台電腦都結束 Saydown（系統匣右鍵 → 結束），再把舊電腦的 `%APPDATA%\Saydown` 資料夾整個複製到新電腦的同一位置並覆蓋，設定、詞庫和歷史紀錄就會一起搬過去。
+
 ### 從原始碼執行
+
+```
+git clone https://github.com/allllen001/saydown.git
+cd saydown
+```
+
+需要先安裝 [Git](https://git-scm.com) 與 [uv](https://docs.astral.sh/uv/)，再建立環境：
 
 ```
 uv venv .venv --python 3.12

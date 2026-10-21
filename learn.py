@@ -54,6 +54,33 @@ def focused_element():
     return uia.GetFocusedElement()
 
 
+# 確定不能打字的元件：按鈕、清單（桌面圖示、檔案總管）、選單、樹狀、分頁、整個視窗、沒有文字的文件
+NOT_TYPING = {50000, 50007, 50008, 50011, 50019, 50023, 50024, 50030, 50032}
+
+
+def focus_is_editable():
+    """游標是不是在可以打字的地方；看不出來時當作可以（照常貼上、還原剪貼簿）。
+
+    ValuePattern 最準：一般輸入框可寫入，Chrome、Edge 的網頁本體是唯讀。
+    沒有的話，有 TextPattern 的編輯區或文件（Word、記事本）算可以打字。
+    兩個都沒有時，只有確定不能打字的元件才回傳 False：
+    Chromium 系的程式剛開始被查詢時，焦點只回報成空白的 Pane，不能當成沒有輸入框。
+    """
+    uia, UIA = _uia()
+    el = uia.GetFocusedElement()
+    if el is None:
+        return False
+    try:
+        pat = el.GetCurrentPattern(10002)  # ValuePattern
+        if pat:
+            return not pat.QueryInterface(UIA.IUIAutomationValuePattern).CurrentIsReadOnly
+        if el.GetCurrentPattern(10014):  # TextPattern
+            return True
+        return el.CurrentControlType not in NOT_TYPING
+    except Exception:
+        return True
+
+
 def read(el):
     uia, UIA = _uia()
     try:

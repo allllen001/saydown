@@ -365,6 +365,30 @@ def ollama_installed():
     return exe.exists() or shutil.which("ollama") is not None
 
 
+def ollama_models(cfg, timeout=2):
+    """Ollama 已下載的模型名稱；連不上時丟出例外。"""
+    base = cfg["ollama_url"].rsplit("/api/", 1)[0]
+    tags = requests.get(base + "/api/tags", timeout=timeout).json()
+    return {m.get("name") for m in tags.get("models", [])}
+
+
+def has_model(cfg, names):
+    model = cfg["ollama_model"]
+    return model in names or f"{model}:latest" in names
+
+
+def llm_problem(cfg):
+    """修稿模型呼叫失敗時找出原因，讓浮動列直接說出來，不必去翻記錄檔。"""
+    try:
+        names = ollama_models(cfg)
+    except Exception:
+        # 先試連線再看有沒有安裝：裝在非預設位置但有開著的 Ollama 也算數
+        return "Ollama 沒有開啟" if ollama_installed() else "沒有安裝 Ollama"
+    if not has_model(cfg, names):
+        return "沒有下載修稿模型"
+    return "修稿模型沒有回應"
+
+
 # 不修稿時沒有模型處理口令，「換行」「新段落」由程式直接換掉
 VOICE_BREAKS = [
     (re.compile(r"[，。、]?\s*(?:新段落|下一段)\s*[，。、]?\s*"), "\n\n"),
@@ -838,16 +862,16 @@ class VoiceInput:
     def warm_up_llm(self):
         """確認修稿用的 Ollama 與模型都在；缺什麼就跳通知告訴使用者，再讓模型先載進顯示卡。"""
         off_hint = "不需要修稿可在系統匣圖示按右鍵 →「設定」關掉「修稿」，說完就直接貼上。"
-        if not ollama_installed():
-            log.warning("沒有安裝 Ollama，修稿會改貼原始辨識結果")
-            self.notify("沒有安裝修稿用的 Ollama", "目前說的話會直接貼上、不修稿。要修稿請到 ollama.com 安裝。" + off_hint)
-            return
-        base = self.cfg["ollama_url"].rsplit("/api/", 1)[0]
         for attempt in range(30):
             try:
-                tags = requests.get(base + "/api/tags", timeout=2).json()
+                names = ollama_models(self.cfg)
                 break
             except Exception:
+                if not ollama_installed():
+                    log.warning("沒有安裝 Ollama，修稿會改貼原始辨識結果")
+                    self.notify("沒有安裝修稿用的 Ollama",
+                                "目前說的話會直接貼上、不修稿。要修稿請到 ollama.com 安裝。" + off_hint)
+                    return
                 if attempt == 0:
                     log.info("Ollama 還沒準備好，稍後重試")
                 time.sleep(2)
@@ -856,8 +880,7 @@ class VoiceInput:
             self.notify("連不上修稿用的 Ollama", "請從開始功能表開啟 Ollama。連上之前說的話會直接貼上、不修稿。")
             return
         model = self.cfg["ollama_model"]
-        names = {m.get("name") for m in tags.get("models", [])}
-        if model not in names and f"{model}:latest" not in names:
+        if not has_model(self.cfg, names):
             log.warning("Ollama 沒有修稿模型 %s", model)
             self.notify(
                 "還沒下載修稿模型",
@@ -1423,7 +1446,7 @@ class VoiceInput:
                 result = self.ask_llm_edit(mode, selected, raw)
             except Exception:
                 log.exception("Ollama 改寫失敗，選取文字維持原樣")
-                self.job_overlay().flash("改寫失敗，原文未變動", 3)
+                self.job_overlay().flash(f"改寫失敗：{llm_problem(self.cfg)}，原文未變動", 4)
                 return
             if not result:
                 log.warning("改寫結果是空的，選取文字維持原樣")
@@ -1435,7 +1458,7 @@ class VoiceInput:
                 result = self.ask_llm_ask(raw)
             except Exception:
                 log.exception("Ollama Ask 失敗")
-                self.job_overlay().flash("Ask 失敗，請看記錄檔", 3)
+                self.job_overlay().flash(f"Ask 失敗：{llm_problem(self.cfg)}", 4)
                 return
             source_len = len(raw)
         else:
@@ -1448,7 +1471,7 @@ class VoiceInput:
             except Exception:
                 log.exception("Ollama 修稿失敗，改貼原始辨識結果")
                 result = raw
-                unpolished = True
+                unpolished = llm_problem(self.cfg)
             source_len = len(raw)
         if MODES[mode]["traditional"] and polish:
             result = strip_fillers(self.cc.convert(result).translate(PUNCT_FIX))
@@ -1463,11 +1486,15 @@ class VoiceInput:
         if self.cfg.get("log_text", False):
             log.info("原文：%s｜選取：%s｜結果：%s", raw, selected, result)
         self.job_overlay().hide()
-        self.paste(result)
-        if self.cfg.get("auto_learn", True) and polish:  # 從改字挑出新詞也要用修稿模型
+        keep = not selected and not self.focus_is_editable(app)
+        self.paste(result, keep=keep)
+        if keep:
+            log.info("游標不在輸入框（%s），文字留在剪貼簿", app or "?")
+            self.job_overlay().flash("沒有輸入框：文字已複製，按 Ctrl+V 貼上", 4)
+        elif self.cfg.get("auto_learn", True) and polish:  # 從改字挑出新詞也要用修稿模型
             threading.Thread(target=self.watch_edits, args=(result, self.session), daemon=True).start()
-        if unpolished:  # 不然使用者只會覺得「怎麼沒修好」，不知道是修稿模型沒回應
-            self.job_overlay().flash("未修稿：修稿模型沒有回應", 3)
+        if unpolished and not keep:  # 不然使用者只會覺得「怎麼沒修好」，不知道是修稿模型沒回應
+            self.job_overlay().flash(f"未修稿：{unpolished}", 4)
         if self.cfg.get("history", True):
             try:
                 saved_mode = f"translate:{translate_target(self.cfg) or 'en'}" if mode == "english" else mode
@@ -1478,16 +1505,29 @@ class VoiceInput:
             except Exception:
                 log.exception("寫入歷史紀錄失敗")
 
-    def paste(self, text):
-        with CLIPBOARD_LOCK:
-            self._paste(text)
+    def focus_is_editable(self, app):
+        """游標在不在輸入框；終端機讀不出來但一定能貼，判斷失敗也當作在輸入框（照舊還原剪貼簿）。"""
+        if app in self.cfg.get("selection_skip_apps", DEFAULT_SKIP_APPS):
+            return True
+        try:
+            return learn.focus_is_editable()
+        except Exception:
+            log.exception("判斷輸入框失敗")
+            return True
 
-    def _paste(self, text):
+    def paste(self, text, keep=False):
+        with CLIPBOARD_LOCK:
+            self._paste(text, keep)
+
+    def _paste(self, text, keep=False):
+        """貼到游標位置後還原原本的剪貼簿；keep＝沒有輸入框，文字留在剪貼簿讓使用者自己貼。"""
         old = clip.snapshot()
         clip.set_text(text)
         ours = clip.sequence()
         time.sleep(0.05)
-        keyboard.send("ctrl+v")
+        keyboard.send("ctrl+v")  # 判斷可能有誤，照樣送出貼上；真的沒有輸入框時不會有作用
+        if keep:
+            return
         time.sleep(0.5)  # 等目標程式讀完剪貼簿再還原
         if clip.sequence() == ours:  # 這段時間使用者自己複製了別的東西就不還原
             clip.restore(old)

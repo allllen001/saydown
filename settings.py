@@ -25,6 +25,7 @@ MAIN_KEYS = [
 FORMAL_KEYS = [("", "不使用"), ("f10", "F10"), ("f9", "F9"), ("f8", "F8"), ("f11", "F11"), ("f12", "F12")]
 TRANSLATE_TO = [("", "不翻譯"), ("en", "英文"), ("ja", "日文"), ("ko", "韓文"), ("vi", "越南文"), ("id", "印尼文"),
                 ("th", "泰文"), ("es", "西班牙文"), ("fr", "法文"), ("de", "德文")]
+DEVICES = [("auto", "自動"), ("cuda", "顯示卡（GPU）"), ("cpu", "CPU（較慢，用小模型）")]
 TONES = [("formal", "正式"), ("chat", "聊天"), ("cleanup", "一般")]
 APP_NAMES = {
     "outlook.exe": "Outlook",
@@ -93,8 +94,9 @@ def run_window():
     root = tk.Tk()
     root.title("Saydown・設定")
     sc = glass.scale(root)
-    root.geometry(f"{int(560 * sc)}x{int(780 * sc)}")
-    root.minsize(int(520 * sc), int(700 * sc))
+    tall = min(int(900 * sc), root.winfo_screenheight() - int(80 * sc))  # 筆電螢幕矮，不要超出畫面
+    root.geometry(f"{int(560 * sc)}x{tall}")
+    root.minsize(int(520 * sc), min(int(760 * sc), tall))
     glass.apply(root)
     glass.style(root)
     BG, PANEL, INK, MUTED, ACCENT, FONT = glass.KEY, glass.CARD, glass.INK, glass.MUTED, glass.ACCENT, glass.FONT
@@ -152,6 +154,39 @@ def run_window():
     field.pack(side="left")
     box.bind("<<ComboboxSelected>>", save_hotkeys)
 
+    # ---- 辨識與修稿 ----
+    engine = card("辨識與修稿")
+    device_var = tk.StringVar(value=dict(DEVICES).get(cfg.get("whisper_device", "auto"), "自動"))
+    line = row(engine, "語音辨識")
+    field, box = glass.combo(line, device_var, [v for _, v in DEVICES], width=22)
+    field.pack(side="left")
+    box.bind("<<ComboboxSelected>>",
+             lambda e: saved(whisper_device={v: k for k, v in DEVICES}[device_var.get()]))
+
+    polish = tk.BooleanVar(value=cfg.get("polish", True))
+    models = ollama_models(cfg)
+    model_var = tk.StringVar(value=cfg.get("ollama_model", ""))
+    line = row(engine, "修稿")
+    glass.Toggle(line, polish, lambda: (saved(polish=polish.get()), refresh_polish())).pack(side="left")
+    polish_hint = tk.Label(line, bg=PANEL, fg=MUTED, font=FONT)
+    polish_hint.pack(side="left", padx=(12, 0))
+    line = row(engine, "修稿模型")
+    field, model_box = glass.combo(line, model_var, models, width=26)
+    field.pack(side="left")
+    model_box.bind("<<ComboboxSelected>>", lambda e: saved(ollama_model=model_var.get()))
+
+    def refresh_polish():
+        on = polish.get()
+        model_box.config(state="readonly" if on and models else "disabled")
+        if not on:
+            polish_hint.config(text="直接貼上辨識結果，不需要 Ollama")
+        elif not models:
+            polish_hint.config(text="找不到 Ollama 或修稿模型")
+        else:
+            polish_hint.config(text="")
+
+    refresh_polish()
+
     # ---- 輸出 ----
     out = card("輸出")
     current = cfg.get("translate_to")
@@ -191,13 +226,6 @@ def run_window():
     spin.bind("<FocusOut>", save_days)
     spin.bind("<Return>", save_days)
     tk.Label(line, text="天", bg=PANEL, fg=MUTED, font=FONT).pack(side="left", padx=6)
-
-    line = row(out, "修稿模型")
-    models = ollama_models(cfg)
-    model_var = tk.StringVar(value=cfg.get("ollama_model", ""))
-    field, box = glass.combo(line, model_var, models, width=26, state="readonly" if models else "disabled")
-    field.pack(side="left")
-    box.bind("<<ComboboxSelected>>", lambda e: saved(ollama_model=model_var.get()))
 
     # ---- 依程式切換語氣 ----
     tones = card("依程式切換語氣", expand=True)

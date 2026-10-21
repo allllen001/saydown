@@ -1,7 +1,9 @@
 {
   "whisper_model": "large-v3",
-  "whisper_device": "cuda",
+  "whisper_model_cpu": "small",
+  "whisper_device": "auto",
   "whisper_compute_type": "float16",
+  "polish": true,
   "ollama_url": "http://127.0.0.1:11434/api/chat",
   "ollama_model": "qwen3.5:9b",
   "hotkeys": {

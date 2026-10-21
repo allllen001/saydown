@@ -1,7 +1,7 @@
 """全本機語音輸入：按住快捷鍵說話，放開後自動辨識、修稿並貼到游標位置。
 
-語音由 faster-whisper 在本機 GPU 辨識，修稿由本機 Ollama 模型處理，
-資料不會離開這台電腦。
+語音由 faster-whisper 在本機辨識（有 NVIDIA 顯示卡用 GPU，沒有就用 CPU），
+修稿由本機 Ollama 模型處理（可在設定關掉），資料不會離開這台電腦。
 """
 
 import ctypes
@@ -10,6 +10,7 @@ import logging
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -64,6 +65,7 @@ import sounddevice as sd  # noqa: E402
 import winreg  # noqa: E402
 import winsound  # noqa: E402
 from faster_whisper import WhisperModel  # noqa: E402
+from faster_whisper.utils import download_model  # noqa: E402
 from opencc import OpenCC  # noqa: E402
 import clip  # noqa: E402
 import history  # noqa: E402
@@ -324,6 +326,57 @@ def load_config():
     return cfg
 
 
+def polish_on(cfg):
+    """關掉修稿時完全不用 Ollama：辨識結果轉成台灣繁體、去掉贅字就直接貼上。"""
+    return cfg.get("polish", True)
+
+
+# 語音辨識模型的下載大小，第一次使用時告訴使用者要等多久
+MODEL_SIZES = {"small": "約 0.5 GB", "medium": "約 1.5 GB", "large-v3": "約 3 GB", "large-v3-turbo": "約 1.6 GB"}
+WHISPER_KEYS = ("whisper_device", "whisper_model", "whisper_model_cpu", "whisper_compute_type")
+
+
+def cuda_available():
+    try:
+        import ctranslate2
+
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
+
+
+def whisper_setup(cfg):
+    """回傳 (device, 模型, compute_type)。
+
+    whisper_device 為 "auto" 時，有 NVIDIA 顯示卡就用 GPU，沒有就用 CPU。
+    CPU 跑 large-v3 一句話要等十幾秒，所以 CPU 改用較小的模型（whisper_model_cpu）。
+    """
+    device = cfg.get("whisper_device", "auto")
+    if device == "auto":
+        device = "cuda" if cuda_available() else "cpu"
+    if device == "cuda":
+        return "cuda", cfg["whisper_model"], cfg.get("whisper_compute_type", "float16")
+    return "cpu", cfg.get("whisper_model_cpu", "small"), "int8"
+
+
+def ollama_installed():
+    exe = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Ollama" / "ollama.exe"
+    return exe.exists() or shutil.which("ollama") is not None
+
+
+# 不修稿時沒有模型處理口令，「換行」「新段落」由程式直接換掉
+VOICE_BREAKS = [
+    (re.compile(r"[，。、]?\s*(?:新段落|下一段)\s*[，。、]?\s*"), "\n\n"),
+    (re.compile(r"[，。、]?\s*換行\s*[，。、]?\s*"), "\n"),
+]
+
+
+def apply_voice_breaks(text):
+    for pattern, br in VOICE_BREAKS:
+        text = pattern.sub(br, text)
+    return text.strip()
+
+
 def update_config(key, value):
     """只改磁碟上設定檔的一個欄位，其他欄位（含手動改過的快捷鍵、詞庫視窗的修改）原樣保留。"""
     cfg = load_config()
@@ -455,7 +508,8 @@ def capture_selection(selection, cfg):
     """模擬 Ctrl+C 讀出選取文字，再把剪貼簿還原。沒有選取時剪貼簿不會變動。"""
     try:
         exe = selection.app = foreground_exe()
-        if exe in cfg.get("selection_skip_apps", DEFAULT_SKIP_APPS):
+        # 不修稿時沒辦法用說的改寫選取文字，也就不必借用剪貼簿
+        if exe in cfg.get("selection_skip_apps", DEFAULT_SKIP_APPS) or not polish_on(cfg):
             return
         with CLIPBOARD_LOCK:
             before = clip.sequence()
@@ -580,6 +634,7 @@ class VoiceInput:
         self.cfg_mtime = CONFIG_PATH.stat().st_mtime
         self.cc = OpenCC("s2twp")
         self.model = None
+        self.device = None  # 實際用來辨識的裝置：cuda 或 cpu
         self.whisper_lock = threading.Lock()  # 完整辨識優先，即時預覽搶不到就跳過
         self.jobs = queue.Queue()
         self.control = queue.Queue()
@@ -632,32 +687,42 @@ class VoiceInput:
 
     # ---------- 啟動 ----------
 
-    def load_models(self):
+    def notify(self, title, message):
+        """Windows 通知：會留在通知中心，錯過也找得到。"""
         try:
-            t = time.time()
-            options = dict(
-                device=self.cfg["whisper_device"],
-                compute_type=self.cfg["whisper_compute_type"],
-            )
-            try:
-                # 模型已下載過就完全離線載入，不連網檢查版本
-                self.model = WhisperModel(
-                    self.cfg["whisper_model"], local_files_only=True, **options
-                )
-            except Exception:
-                log.info("本機找不到 Whisper 模型，第一次使用需下載")
-                self.set_state("loading", "第一次使用，下載 Whisper 模型中…")
-                self.model = WhisperModel(self.cfg["whisper_model"], **options)
-            # 空跑一次讓 CUDA 暖機，不然第一段錄音的即時預覽與辨識都會慢好幾秒
-            list(self.model.transcribe(np.zeros(SAMPLE_RATE, np.float32), language="zh", beam_size=1)[0])
-            log.info("Whisper 載入完成 %.1fs", time.time() - t)
+            self.icon.notify(message, title)
+        except Exception:
+            log.exception("系統通知失敗")
+
+    def notify_once(self, key, title, message):
+        """同一件事只提醒一次（例如沒有顯示卡），記在設定檔，之後啟動不再跳。"""
+        seen = self.cfg.get("notices", [])
+        if key in seen:
+            return
+        self.notify(title, message)
+        self.cfg["notices"] = seen + [key]
+        try:
+            update_config("notices", self.cfg["notices"])
+        except OSError:
+            log.exception("記錄提醒失敗")
+
+    def load_models(self):
+        downloaded = False
+        try:
+            downloaded = self.load_whisper()
         except Exception:
             log.exception("模型載入失敗")
-            self.set_state("error", "模型載入失敗，請看記錄檔")
+            self.set_state("error", "語音辨識模型載入失敗，請看記錄檔")
+            self.notify(
+                "語音辨識模型載入失敗",
+                "第一次使用要連上網路下載模型，請確認網路後重新啟動 Saydown。"
+                "仍然失敗請在系統匣圖示按右鍵 →「開啟記錄檔」查看原因。",
+            )
             return
         # 先讓 Ollama 把模型載進顯示卡，第一次使用才不會等很久。
         # 開機自動啟動時 Ollama 可能還沒起來；失敗也照樣啟用快捷鍵（修稿失敗會改貼原始辨識）。
-        threading.Thread(target=self.warm_up_llm, daemon=True).start()
+        if polish_on(self.cfg):
+            threading.Thread(target=self.warm_up_llm, daemon=True).start()
         if invalid_hotkeys(self.cfg.get("hotkeys")):
             log.warning("設定檔的快捷鍵有誤，改用預設：右 Alt 與 F10")
             self.cfg["hotkeys"] = {"right alt": "cleanup", "f10": "formal"}
@@ -667,6 +732,66 @@ class VoiceInput:
         threading.Thread(target=self.watch_config, daemon=True).start()
         self.set_state("idle", "待命中　" + self.hotkey_summary())
         log.info("就緒，快捷鍵：%s", self.hotkey_summary())
+        if downloaded:
+            self.notify("Saydown 可以用了", "按住說話鍵說話，放開後文字會貼到游標位置。\n" + self.hotkey_summary())
+
+    def load_whisper(self):
+        """載入語音辨識模型，回傳這次有沒有下載模型。GPU 載入失敗（例如驅動程式太舊）時自動改用 CPU。"""
+        device, name, compute = whisper_setup(self.cfg)
+        try:
+            model, downloaded = self.open_whisper(device, name, compute)
+        except Exception:
+            if device != "cuda":
+                raise
+            log.exception("用 GPU 載入 Whisper 失敗，改用 CPU")
+            device, name, compute = "cpu", self.cfg.get("whisper_model_cpu", "small"), "int8"
+            model, downloaded = self.open_whisper(device, name, compute)
+            self.notify(
+                "顯示卡無法使用，改用 CPU 辨識",
+                "可能是 NVIDIA 驅動程式太舊。更新驅動程式後重新啟動 Saydown 就會改回顯示卡。CPU 辨識速度會慢一些。",
+            )
+        else:
+            if device == "cpu" and self.cfg.get("whisper_device", "auto") == "auto":
+                self.notify_once(
+                    "no-gpu", "沒有偵測到 NVIDIA 顯示卡",
+                    "已改用 CPU 和較小的語音模型辨識，速度和準確度會比有顯示卡時差一些。",
+                )
+        with self.whisper_lock:
+            self.model, self.device = model, device
+            self._prompt_cache = (None,)  # 不同模型的 tokenizer 可能不同
+        log.info("語音辨識：%s（%s）", name, "GPU" if device == "cuda" else "CPU")
+        return downloaded
+
+    def open_whisper(self, device, name, compute):
+        t = time.time()
+        downloaded = False
+        try:
+            path = download_model(name, local_files_only=True)  # 已下載過就完全離線載入，不連網檢查版本
+        except Exception:
+            size = MODEL_SIZES.get(name, "")
+            log.info("本機找不到 Whisper 模型 %s，第一次使用需下載", name)
+            self.set_state("loading", f"第一次使用，下載語音辨識模型中（{size}）…")
+            self.notify(
+                "第一次使用，正在下載語音辨識模型",
+                f"{name}（{size}），請保持網路連線。系統匣圖示變成綠色就可以開始說話。",
+            )
+            path = download_model(name)
+            downloaded = True
+        model = WhisperModel(path, device=device, compute_type=compute)
+        # 空跑一次暖機，不然第一段錄音的即時預覽與辨識都會慢好幾秒（GPU 有問題也會在這裡就發現）
+        list(model.transcribe(np.zeros(SAMPLE_RATE, np.float32), language="zh", beam_size=1)[0])
+        log.info("Whisper %s 載入完成 %.1fs", name, time.time() - t)
+        return model, downloaded
+
+    def reload_whisper(self):
+        """設定改了 GPU／CPU：在背景載入新模型，載好之前照樣用舊的辨識。"""
+        self.job_state("loading", "切換語音辨識模型中…")
+        try:
+            self.load_whisper()
+        except Exception:
+            log.exception("切換語音辨識模型失敗，沿用原本的模型")
+            self.notify("切換語音辨識模型失敗", "沿用原本的模型。請在系統匣圖示按右鍵 →「開啟記錄檔」查看原因。")
+        self.job_state("idle", "待命中　" + self.hotkey_summary())
 
     def bind_hotkeys(self):
         """依設定註冊快捷鍵；設定視窗改了快捷鍵時會再呼叫一次，不必重開。"""
@@ -702,16 +827,41 @@ class VoiceInput:
                 log.exception("重新讀取設定失敗")
 
     def warm_up_llm(self):
+        """確認修稿用的 Ollama 與模型都在；缺什麼就跳通知告訴使用者，再讓模型先載進顯示卡。"""
+        off_hint = "不需要修稿可在系統匣圖示按右鍵 →「設定」關掉「修稿」，說完就直接貼上。"
+        if not ollama_installed():
+            log.warning("沒有安裝 Ollama，修稿會改貼原始辨識結果")
+            self.notify("沒有安裝修稿用的 Ollama", "目前說的話會直接貼上、不修稿。要修稿請到 ollama.com 安裝。" + off_hint)
+            return
+        base = self.cfg["ollama_url"].rsplit("/api/", 1)[0]
         for attempt in range(30):
             try:
-                self.ask_llm("cleanup", "測試")
-                log.info("Ollama 暖機完成")
-                return
+                tags = requests.get(base + "/api/tags", timeout=2).json()
+                break
             except Exception:
                 if attempt == 0:
                     log.info("Ollama 還沒準備好，稍後重試")
                 time.sleep(2)
-        log.warning("Ollama 一分鐘內都連不上，修稿會改貼原始辨識結果")
+        else:
+            log.warning("Ollama 一分鐘內都連不上，修稿會改貼原始辨識結果")
+            self.notify("連不上修稿用的 Ollama", "請從開始功能表開啟 Ollama。連上之前說的話會直接貼上、不修稿。")
+            return
+        model = self.cfg["ollama_model"]
+        names = {m.get("name") for m in tags.get("models", [])}
+        if model not in names and f"{model}:latest" not in names:
+            log.warning("Ollama 沒有修稿模型 %s", model)
+            self.notify(
+                "還沒下載修稿模型",
+                f"請在命令提示字元執行：ollama pull {model}\n下載好之前說的話會直接貼上、不修稿。",
+            )
+            return
+        if self.device == "cpu":
+            self.notify_once("cpu-polish", "沒有顯示卡時修稿會很慢", "修稿模型在 CPU 上一句要等好一陣子。" + off_hint)
+        try:
+            self.ask_llm("cleanup", "測試")
+            log.info("Ollama 暖機完成")
+        except Exception:
+            log.exception("Ollama 暖機失敗")
 
     def preload_llm(self):
         """開始錄音時確認修稿模型還在顯示卡上，不在就趁使用者說話時先載入。
@@ -752,7 +902,7 @@ class VoiceInput:
                 return False
             self.keys_down.add(key)
             if self.active_mode is None:
-                if mode == "cleanup" and translate_target(self.cfg):
+                if mode == "cleanup" and translate_target(self.cfg) and polish_on(self.cfg):
                     mode = "english"
                 self.start_recording(mode, key)
             elif self.locked and self.active_key == key:
@@ -773,8 +923,8 @@ class VoiceInput:
             if event.event_type == keyboard.KEY_UP:
                 self.space_held = False
             return False
-        if self.active_mode is None or self.active_key not in self.keys_down:
-            return True
+        if self.active_mode is None or self.active_key not in self.keys_down or not polish_on(self.cfg):
+            return True  # Ask 要靠修稿模型產生內容，不修稿時 Space 照常放行
         if event.event_type == keyboard.KEY_DOWN:
             self.space_held = True
         if event.event_type == keyboard.KEY_DOWN and self.active_mode != "ask":
@@ -889,8 +1039,10 @@ class VoiceInput:
         if self.locked or self.active_mode != mode:  # 開麥克風期間已切成免持或 Ask
             self.refresh_label()
         self.set_state("recording", f"錄音中（{MODES[self.active_mode or mode]['label']}）")
-        threading.Thread(target=self.preload_llm, daemon=True).start()
-        if self.cfg.get("live_preview", True):
+        if polish_on(self.cfg):
+            threading.Thread(target=self.preload_llm, daemon=True).start()
+        # CPU 辨識慢，即時預覽會和放開後的完整辨識搶 CPU，反而拖慢貼上
+        if self.cfg.get("live_preview", True) and self.device != "cpu":
             threading.Thread(target=self.live_preview, args=(session,), daemon=True).start()
         # 免持模式忘了關時，最長錄到上限就自動送出（Typeless 也是 9 分鐘）
         timer = threading.Timer(
@@ -1020,6 +1172,8 @@ class VoiceInput:
                 log.warning("快捷鍵設定有誤（%s），沿用原本的快捷鍵", "、".join(bad))
                 new["hotkeys"] = old_hotkeys
             hotkeys_changed = new.get("hotkeys") != old_hotkeys
+            whisper_changed = any(new.get(k) != self.cfg.get(k) for k in WHISPER_KEYS)
+            polish_turned_on = polish_on(new) and not polish_on(self.cfg)
             self.cfg.update(new)
             set_language(translate_target(self.cfg))
             self.overlay.limit = self.cfg.get("max_seconds", 540)
@@ -1032,6 +1186,17 @@ class VoiceInput:
                 self.bind_hotkeys()
                 self.set_state("idle", "待命中　" + self.hotkey_summary())
                 log.info("快捷鍵改為：%s", self.hotkey_summary())
+            if self.model is None:
+                return  # 還在第一次載入，載入時會讀到新設定
+            if whisper_changed:
+                threading.Thread(target=self.reload_whisper, daemon=True).start()
+            if polish_turned_on:
+                log.info("修稿已開啟")
+                threading.Thread(target=self.start_polish, daemon=True).start()
+
+    def start_polish(self):
+        ensure_ollama()
+        self.warm_up_llm()
 
     def job_overlay(self):
         """處理上一段時，如果下一段已經在錄音，就不要動浮動列，免得錄音中的提示被蓋掉。"""
@@ -1233,10 +1398,18 @@ class VoiceInput:
             return
         if mode == "cleanup" and app:
             mode = self.cfg.get("app_tones", DEFAULT_APP_TONES).get(app, mode)
-        label = "改寫" if selected else MODES[mode]["label"]
-        self.job_overlay().processing(f"{label}中")
-        self.job_state("processing", f"{label}中…")
-        if selected:
+        polish = polish_on(self.cfg)
+        if polish:
+            label = "改寫" if selected else MODES[mode]["label"]
+            self.job_overlay().processing(f"{label}中")
+            self.job_state("processing", f"{label}中…")
+        if not polish:
+            # 辨識結果已經轉成台灣繁體、去掉贅字；翻譯和正式語氣都要靠修稿模型，這裡一律照原話貼上
+            result = apply_voice_breaks(raw)
+            source_len = len(raw)
+            if mode in ("english", "ask"):
+                mode = "cleanup"  # 歷史紀錄照實記成一般聽寫
+        elif selected:
             try:
                 result = self.ask_llm_edit(mode, selected, raw)
             except Exception:
@@ -1268,7 +1441,7 @@ class VoiceInput:
                 result = raw
                 unpolished = True
             source_len = len(raw)
-        if MODES[mode]["traditional"]:
+        if MODES[mode]["traditional"] and polish:
             result = strip_fillers(self.cc.convert(result).translate(PUNCT_FIX))
         if mode == "chat" and not selected:
             result = result.removesuffix("。")  # 聊天訊息句尾不打句號，模型常忘記，由程式處理
@@ -1282,7 +1455,7 @@ class VoiceInput:
             log.info("原文：%s｜選取：%s｜結果：%s", raw, selected, result)
         self.job_overlay().hide()
         self.paste(result)
-        if self.cfg.get("auto_learn", True):
+        if self.cfg.get("auto_learn", True) and polish:  # 從改字挑出新詞也要用修稿模型
             threading.Thread(target=self.watch_edits, args=(result, self.session), daemon=True).start()
         if unpolished:  # 不然使用者只會覺得「怎麼沒修好」，不知道是修稿模型沒回應
             self.job_overlay().flash("未修稿：修稿模型沒有回應", 3)
@@ -1391,6 +1564,7 @@ def ensure_single_instance():
 
 
 def ensure_ollama():
+    """Ollama 有安裝但沒在執行時（例如剛開機）幫忙啟動。"""
     try:
         requests.get("http://127.0.0.1:11434/api/version", timeout=2)
     except requests.RequestException:
@@ -1420,8 +1594,10 @@ def main():
     log_crashes()
     log.info("啟動 %s %s", APP_NAME, __version__)
     try:
-        ensure_ollama()
-        VoiceInput(load_config()).run()
+        config = load_config()
+        if polish_on(config):
+            ensure_ollama()
+        VoiceInput(config).run()
     finally:
         log.info("主程式結束")
     os._exit(0)  # 從系統匣結束：結束碼 0 讓守護程式知道是使用者要關，不再重開

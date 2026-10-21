@@ -350,8 +350,9 @@ def whisper_setup(cfg):
 
     whisper_device 為 "auto" 時，有 NVIDIA 顯示卡就用 GPU，沒有就用 CPU。
     CPU 跑 large-v3 一句話要等十幾秒，所以 CPU 改用較小的模型（whisper_model_cpu）。
+    CPU 版安裝檔沒有 NVIDIA 函式庫，不管設定為何都用 CPU。
     """
-    device = cfg.get("whisper_device", "auto")
+    device = "cpu" if paths.CPU_ONLY else cfg.get("whisper_device", "auto")
     if device == "auto":
         device = "cuda" if cuda_available() else "cpu"
     if device == "cuda":
@@ -669,7 +670,9 @@ class VoiceInput:
                 ),
                 pystray.MenuItem("開啟設定檔", lambda: os.startfile(CONFIG_PATH)),
                 pystray.MenuItem("開啟記錄檔", lambda: os.startfile(LOG_PATH)),
-                pystray.MenuItem(f"{APP_NAME} {__version__} · {__author__}", None, enabled=False),
+                pystray.MenuItem(
+                    f"{APP_NAME} {__version__}{' CPU 版' if paths.CPU_ONLY else ''} · {__author__}", None, enabled=False
+                ),
                 pystray.MenuItem("結束", self.quit),
             ),
         )
@@ -751,7 +754,13 @@ class VoiceInput:
                 "可能是 NVIDIA 驅動程式太舊。更新驅動程式後重新啟動 Saydown 就會改回顯示卡。CPU 辨識速度會慢一些。",
             )
         else:
-            if device == "cpu" and self.cfg.get("whisper_device", "auto") == "auto":
+            if paths.CPU_ONLY:
+                if cuda_available():
+                    self.notify_once(
+                        "cpu-build-gpu", "這台電腦有 NVIDIA 顯示卡",
+                        "目前裝的是 CPU 版。改裝 GPU 版（Saydown-Setup-<版本>.exe）辨識會更快更準，設定與歷史紀錄都會保留。",
+                    )
+            elif device == "cpu" and self.cfg.get("whisper_device", "auto") == "auto":
                 self.notify_once(
                     "no-gpu", "沒有偵測到 NVIDIA 顯示卡",
                     "已改用 CPU 和較小的語音模型辨識，速度和準確度會比有顯示卡時差一些。",

@@ -15,7 +15,18 @@
 
 ## 安裝
 
-到 [Releases](https://github.com/allllen001/saydown/releases) 下載 `Saydown-Setup-<版本>.exe` 執行即可，不需要系統管理員權限。
+到 [Releases](https://github.com/allllen001/saydown/releases) 下載安裝檔執行即可，不需要系統管理員權限。每一版都有兩個安裝檔：
+
+| 安裝檔 | 大小 | 給哪種電腦 |
+|---|---|---|
+| `Saydown-Setup-<版本>.exe`（GPU 版） | 約 1.4 GB | 有 **NVIDIA 顯示卡**的電腦：用顯示卡辨識，又快又準 |
+| `Saydown-Setup-<版本>-CPU.exe`（CPU 版） | 約 95 MB | **沒有 NVIDIA 顯示卡**的電腦（一般文書筆電、只有 Intel／AMD 內建顯示的電腦） |
+
+兩個版本的功能一樣，差別只在 GPU 版多帶了約 2 GB 的 NVIDIA 顯示卡函式庫（cuBLAS、cuDNN），讓顯示卡能跑語音辨識。CPU 版用不到顯示卡，所以拿掉這些檔案。
+
+**不知道有沒有 NVIDIA 顯示卡？** 按 `Ctrl`＋`Shift`＋`Esc` 開啟工作管理員 →「效能」，左側有「GPU」項目而且寫著 **NVIDIA** 就選 GPU 版；只有 Intel、AMD 或沒有 GPU 項目就選 CPU 版。
+選錯也沒關係：GPU 版在沒有顯示卡的電腦上會自動改用 CPU（只是安裝檔比較大）；CPU 版裝在有 NVIDIA 顯示卡的電腦上，會跳通知建議改裝 GPU 版。兩個版本可以直接互相覆蓋安裝，設定與歷史紀錄都會保留。
+
 安裝時可勾選「建立桌面捷徑」「開機自動啟動」。啟動後右下角系統匣出現 Saydown 圖示，約 15 秒後由灰色變成彩色即可使用。
 
 安裝版的設定、詞庫、歷史紀錄、記錄檔都存在 `%APPDATA%\Saydown`，解除安裝不會刪除。
@@ -29,7 +40,7 @@
    ollama pull qwen3.5:9b
    ```
 
-3. **下載 Saydown**：到 [最新版 Release](https://github.com/allllen001/saydown/releases/latest) 下載 `Saydown-Setup-<版本>.exe`。
+3. **下載 Saydown**：到 [最新版 Release](https://github.com/allllen001/saydown/releases/latest) 下載安裝檔：有 NVIDIA 顯示卡下載 `Saydown-Setup-<版本>.exe`，沒有就下載 `Saydown-Setup-<版本>-CPU.exe`（怎麼選見上面的表格）。
 4. **執行安裝檔**：若出現 Windows SmartScreen 警告，按「其他資訊」→「仍要執行」。依需要勾選「建立桌面捷徑」「開機自動啟動」。
 5. **第一次啟動**：Saydown 會自動下載語音辨識模型，請保持網路連線並等它下載完。系統匣圖示由灰色變成綠色後即可使用。
 6. **選麥克風**：系統匣圖示按右鍵 →「麥克風」，選擇要用的麥克風。
@@ -40,7 +51,8 @@
 | 通知 | 意思與處理方式 |
 |---|---|
 | 第一次使用，正在下載語音辨識模型 | 正常，等它下載完；之後會再跳「Saydown 可以用了」 |
-| 沒有偵測到 NVIDIA 顯示卡 | 已自動改用 CPU 辨識，不用處理（只會提醒一次） |
+| 沒有偵測到 NVIDIA 顯示卡 | 裝了 GPU 版但沒有顯示卡，已自動改用 CPU 辨識，不用處理（只會提醒一次）；想省空間可改裝 CPU 版 |
+| 這台電腦有 NVIDIA 顯示卡 | 裝的是 CPU 版，建議改裝 GPU 版，辨識會更快更準 |
 | 顯示卡無法使用，改用 CPU 辨識 | 有顯示卡但載入失敗，通常是驅動程式太舊；更新驅動程式後重新啟動 Saydown |
 | 沒有安裝修稿用的 Ollama | 要修稿就安裝 Ollama；不需要就到設定關掉「修稿」 |
 | 還沒下載修稿模型 | 照通知執行 `ollama pull qwen3.5:9b` |
@@ -55,8 +67,8 @@
 
 Saydown 在沒有 NVIDIA 顯示卡的電腦上也能用，只是功能和速度會有差別：
 
-1. 照上面的步驟安裝，**跳過第 1、2 步**（不用裝顯示卡驅動和 Ollama）。
-2. 第一次啟動時，Saydown 偵測到沒有顯示卡，會自動改用 CPU 和較小的語音模型（`small`，約 0.5 GB）。
+1. 照上面的步驟安裝，**跳過第 1、2 步**（不用裝顯示卡驅動和 Ollama），第 3 步下載 **CPU 版** `Saydown-Setup-<版本>-CPU.exe`。
+2. 第一次啟動時，Saydown 會用 CPU 和較小的語音模型（`small`，約 0.5 GB）辨識。
 3. 系統匣圖示按右鍵 →「設定」→ 關掉「**修稿**」。
 
 關掉修稿後，說完話會直接貼上辨識結果：一樣是台灣繁體中文，「嗯、呃」這類贅字會去掉，說「換行」「新段落」也會換行。
@@ -66,7 +78,7 @@ Saydown 在沒有 NVIDIA 顯示卡的電腦上也能用，只是功能和速度�
 聊天程式裡句尾不加句號、詞庫提升辨識正確率，這兩項不受影響。
 
 想要辨識更準、可以接受慢一點：把 `config.json` 的 `whisper_model_cpu` 改成 `"medium"`（約 1.5 GB）。
-有顯示卡的電腦也可以在設定的「語音辨識」手動選「CPU」。
+GPU 版也可以在設定的「語音辨識」手動選「CPU」；CPU 版固定用 CPU，這個選項不能改。
 
 ### 從原始碼執行
 
@@ -92,7 +104,7 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 .venv\Scripts\python.exe packaging\build.py
 ```
 
-產生 `dist\Saydown-Setup-<版本>.exe`。版本號與作者在 `version.py`。
+預設兩個版本都打包，產生 `dist\Saydown-Setup-<版本>.exe`（GPU 版）與 `dist\Saydown-Setup-<版本>-CPU.exe`（CPU 版）；加 `--gpu` 或 `--cpu` 只打包其中一個。版本號與作者在 `version.py`。
 
 ## 用法
 

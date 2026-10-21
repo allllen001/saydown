@@ -16,6 +16,8 @@ DATA = Path(os.environ["APPDATA"]) / "Saydown" if FROZEN else SRC
 CONFIG_PATH = DATA / "config.json"
 DEFAULT_CONFIG = RES / "config.example.json"
 ICO_PATH = RES / "saydown.ico"
+# CPU 版安裝檔不含 NVIDIA 函式庫，打包時放一個標記檔，程式就一律用 CPU 辨識
+CPU_ONLY = (RES / "cpu-only").exists()
 
 
 def ensure_data():

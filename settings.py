@@ -158,7 +158,10 @@ def run_window():
     engine = card("辨識與修稿")
     device_var = tk.StringVar(value=dict(DEVICES).get(cfg.get("whisper_device", "auto"), "自動"))
     line = row(engine, "語音辨識")
-    field, box = glass.combo(line, device_var, [v for _, v in DEVICES], width=22)
+    if paths.CPU_ONLY:  # CPU 版沒有 NVIDIA 函式庫，選不了顯示卡
+        device_var.set("CPU（CPU 版安裝檔）")
+    field, box = glass.combo(line, device_var, [v for _, v in DEVICES], width=22,
+                             state="disabled" if paths.CPU_ONLY else "readonly")
     field.pack(side="left")
     box.bind("<<ComboboxSelected>>",
              lambda e: saved(whisper_device={v: k for k, v in DEVICES}[device_var.get()]))

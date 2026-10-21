@@ -5,6 +5,13 @@
 #ifndef AppAuthor
   #define AppAuthor "林凌禕"
 #endif
+; CPU 版：build.py --cpu 傳入 Flavor=-CPU、AppDir=cpu\Saydown；GPU 版用預設值
+#ifndef Flavor
+  #define Flavor ""
+#endif
+#ifndef AppDir
+  #define AppDir "Saydown"
+#endif
 
 [Setup]
 AppId={{7C1F4A52-5D3E-4B8A-9C61-2E0F8D9A6B13}
@@ -19,7 +26,7 @@ DefaultDirName={localappdata}\Programs\Saydown
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=Saydown-Setup-{#AppVersion}
+OutputBaseFilename=Saydown-Setup-{#AppVersion}{#Flavor}
 SetupIconFile=..\saydown.ico
 UninstallDisplayIcon={app}\Saydown.exe
 Compression=lzma2/fast
@@ -39,7 +46,11 @@ Name: "desktopicon"; Description: "建立桌面捷徑"
 Name: "autostart"; Description: "開機自動啟動"
 
 [Files]
-Source: "..\dist\Saydown\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\{#AppDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; 先清掉舊版的程式資源再裝：GPU 版與 CPU 版互換時，才不會留下用不到的 2 GB 顯示卡函式庫或 CPU 版標記
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Icons]
 Name: "{userprograms}\Saydown"; Filename: "{app}\Saydown.exe"

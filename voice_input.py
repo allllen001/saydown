@@ -529,12 +529,12 @@ class Selection:
         return self.text
 
 
-def capture_selection(selection, cfg):
+def capture_selection(selection, cfg, rewrite=True):
     """模擬 Ctrl+C 讀出選取文字，再把剪貼簿還原。沒有選取時剪貼簿不會變動。"""
     try:
         exe = selection.app = foreground_exe()
-        # 不修稿時沒辦法用說的改寫選取文字，也就不必借用剪貼簿
-        if exe in cfg.get("selection_skip_apps", DEFAULT_SKIP_APPS) or not polish_on(cfg):
+        # 不修稿或連不上修稿模型時沒辦法用說的改寫選取文字，也就不必借用剪貼簿
+        if exe in cfg.get("selection_skip_apps", DEFAULT_SKIP_APPS) or not rewrite:
             return
         with CLIPBOARD_LOCK:
             before = clip.sequence()
@@ -660,6 +660,7 @@ class VoiceInput:
         self.cc = OpenCC("s2twp")
         self.model = None
         self.device = None  # 實際用來辨識的裝置：cuda 或 cpu
+        self.llm_ok = None  # 修稿模型能不能用：None＝還不知道，False＝連不上（改成一般聽寫）
         self.whisper_lock = threading.Lock()  # 完整辨識優先，即時預覽搶不到就跳過
         self.jobs = queue.Queue()
         self.control = queue.Queue()
@@ -714,6 +715,19 @@ class VoiceInput:
 
     # ---------- 啟動 ----------
 
+    def polishing(self):
+        """這一句要不要修稿：設定開著、而且修稿模型沒有確定連不上。
+
+        連不上時（沒裝 Ollama、沒開、沒下載模型）改成一般聽寫，不必每句都失敗一次；
+        每次開始錄音時會在背景重新檢查，Ollama 開起來後下一句就恢復修稿。
+        """
+        return polish_on(self.cfg) and self.llm_ok is not False
+
+    def set_llm_ok(self, ok):
+        if ok != self.llm_ok:
+            log.info("修稿模型%s", "可以使用" if ok else "連不上，改成一般聽寫")
+        self.llm_ok = ok
+
     def notify(self, title, message):
         """Windows 通知：會留在通知中心，錯過也找得到。"""
         try:
@@ -735,6 +749,18 @@ class VoiceInput:
 
     def load_models(self):
         downloaded = False
+        if (paths.CPU_ONLY and polish_on(self.cfg) and not ollama_installed()
+                and "cpu-no-ollama" not in self.cfg.get("notices", [])):
+            self.cfg["polish"] = False
+            try:
+                update_config("polish", False)
+            except OSError:
+                log.exception("關閉修稿失敗")
+            log.info("CPU 版、沒有安裝 Ollama：預設關閉修稿")
+            self.notify_once(
+                "cpu-no-ollama", "已關閉修稿",
+                "這台電腦沒有安裝 Ollama，說完會直接貼上辨識結果。之後裝了 Ollama，可在設定打開「修稿」。",
+            )
         try:
             downloaded = self.load_whisper()
         except Exception:
@@ -868,6 +894,7 @@ class VoiceInput:
                 break
             except Exception:
                 if not ollama_installed():
+                    self.set_llm_ok(False)
                     log.warning("沒有安裝 Ollama，修稿會改貼原始辨識結果")
                     self.notify("沒有安裝修稿用的 Ollama",
                                 "目前說的話會直接貼上、不修稿。要修稿請到 ollama.com 安裝。" + off_hint)
@@ -876,11 +903,13 @@ class VoiceInput:
                     log.info("Ollama 還沒準備好，稍後重試")
                 time.sleep(2)
         else:
+            self.set_llm_ok(False)
             log.warning("Ollama 一分鐘內都連不上，修稿會改貼原始辨識結果")
             self.notify("連不上修稿用的 Ollama", "請從開始功能表開啟 Ollama。連上之前說的話會直接貼上、不修稿。")
             return
         model = self.cfg["ollama_model"]
-        if not has_model(self.cfg, names):
+        self.set_llm_ok(has_model(self.cfg, names))
+        if not self.llm_ok:
             log.warning("Ollama 沒有修稿模型 %s", model)
             self.notify(
                 "還沒下載修稿模型",
@@ -901,6 +930,13 @@ class VoiceInput:
         模型閒置超過 keep_alive 會被 Ollama 卸載，下一句修稿得等 8～9 秒重新載入；
         邊說邊載入，放開時通常已經載好。
         """
+        if self.llm_ok is False:
+            try:
+                self.set_llm_ok(has_model(self.cfg, ollama_models(self.cfg, timeout=1)))
+            except Exception:
+                return
+            if not self.llm_ok:
+                return
         base = self.cfg["ollama_url"].rsplit("/api/", 1)[0]
         try:
             loaded = requests.get(base + "/api/ps", timeout=2).json().get("models", [])
@@ -910,6 +946,8 @@ class VoiceInput:
             # 空的對話只載入模型、不產生文字；參數要和修稿相同，否則 Ollama 會再載入一次
             self.chat({"model": self.cfg["ollama_model"], "messages": [], "keep_alive": "60m"})
             log.info("修稿模型已卸載，錄音中預先載入 %.1fs", time.time() - t)
+        except requests.ConnectionError:
+            self.set_llm_ok(False)
         except Exception:
             log.exception("預先載入修稿模型失敗")
 
@@ -934,7 +972,7 @@ class VoiceInput:
                 return False
             self.keys_down.add(key)
             if self.active_mode is None:
-                if mode == "cleanup" and translate_target(self.cfg) and polish_on(self.cfg):
+                if mode == "cleanup" and translate_target(self.cfg) and self.polishing():
                     mode = "english"
                 self.start_recording(mode, key)
             elif self.locked and self.active_key == key:
@@ -955,7 +993,7 @@ class VoiceInput:
             if event.event_type == keyboard.KEY_UP:
                 self.space_held = False
             return False
-        if self.active_mode is None or self.active_key not in self.keys_down or not polish_on(self.cfg):
+        if self.active_mode is None or self.active_key not in self.keys_down or not self.polishing():
             return True  # Ask 要靠修稿模型產生內容，不修稿時 Space 照常放行
         if event.event_type == keyboard.KEY_DOWN:
             self.space_held = True
@@ -1094,7 +1132,7 @@ class VoiceInput:
                 log.exception("錄音控制失敗")
 
     def detect_selection(self, selection, session):
-        capture_selection(selection, self.cfg)
+        capture_selection(selection, self.cfg, self.polishing())
         if selection.text:
             log.info("偵測到選取文字 %d 字，改寫模式", len(selection.text))
         if selection.text and self.active_mode and self.session == session:
@@ -1430,7 +1468,7 @@ class VoiceInput:
             return
         if mode == "cleanup" and app:
             mode = self.cfg.get("app_tones", DEFAULT_APP_TONES).get(app, mode)
-        polish = polish_on(self.cfg)
+        polish = self.polishing()
         if polish:
             label = "改寫" if selected else MODES[mode]["label"]
             self.job_overlay().processing(f"{label}中")
@@ -1441,38 +1479,32 @@ class VoiceInput:
             source_len = len(raw)
             if mode in ("english", "ask"):
                 mode = "cleanup"  # 歷史紀錄照實記成一般聽寫
-        elif selected:
-            try:
-                result = self.ask_llm_edit(mode, selected, raw)
-            except Exception:
-                log.exception("Ollama 改寫失敗，選取文字維持原樣")
-                self.job_overlay().flash(f"改寫失敗：{llm_problem(self.cfg)}，原文未變動", 4)
-                return
-            if not result:
-                log.warning("改寫結果是空的，選取文字維持原樣")
-                self.job_overlay().flash("改寫失敗，原文未變動", 3)
-                return
-            source_len = len(selected)
-        elif mode == "ask":
-            try:
-                result = self.ask_llm_ask(raw)
-            except Exception:
-                log.exception("Ollama Ask 失敗")
-                self.job_overlay().flash(f"Ask 失敗：{llm_problem(self.cfg)}", 4)
-                return
-            source_len = len(raw)
         else:
             try:
-                result = self.ask_llm(mode, raw)
-                # 修稿模式下輸出突然變很長，多半是模型開始「回答」原文，改用原文
-                if mode != "english" and len(result) > len(raw) * 2 + 40:
-                    log.warning("修稿結果異常變長，改貼原始辨識結果")
-                    result = raw
+                if selected:
+                    result = self.ask_llm_edit(mode, selected, raw)
+                    source_len = len(selected)
+                elif mode == "ask":
+                    result = self.ask_llm_ask(raw)
+                    source_len = len(raw)
+                else:
+                    result = self.ask_llm(mode, raw)
+                    source_len = len(raw)
+                    # 修稿模式下輸出突然變很長，多半是模型開始「回答」原文，改用原文
+                    if mode != "english" and len(result) > len(raw) * 2 + 40:
+                        log.warning("修稿結果異常變長，改貼原始辨識結果")
+                        result = raw
+                if not result:
+                    raise ValueError("修稿模型回傳空白")
             except Exception:
-                log.exception("Ollama 修稿失敗，改貼原始辨識結果")
-                result = raw
+                # 改寫、Ask、修稿失敗都改成一般聽寫：照原話貼上（有選取文字就取代它，Ctrl+Z 可還原）
+                log.exception("修稿模型失敗，改成一般聽寫")
                 unpolished = llm_problem(self.cfg)
-            source_len = len(raw)
+                if unpolished != "修稿模型沒有回應":
+                    self.set_llm_ok(False)  # 連不上就先停用，下次開始錄音時再檢查
+                result, source_len = apply_voice_breaks(raw), len(raw)
+                if mode in ("english", "ask"):
+                    mode = "cleanup"
         if MODES[mode]["traditional"] and polish:
             result = strip_fillers(self.cc.convert(result).translate(PUNCT_FIX))
         if mode == "chat" and not selected:
@@ -1486,14 +1518,15 @@ class VoiceInput:
         if self.cfg.get("log_text", False):
             log.info("原文：%s｜選取：%s｜結果：%s", raw, selected, result)
         self.job_overlay().hide()
-        keep = not selected and not self.focus_is_editable(app)
-        self.paste(result, keep=keep)
-        if keep:
+        no_input = not selected and not self.focus_is_editable(app)
+        # 預設說完的文字一律留在剪貼簿，貼錯地方或想再貼一次都能按 Ctrl+V
+        self.paste(result, keep=no_input or self.cfg.get("keep_clipboard", True))
+        if no_input:
             log.info("游標不在輸入框（%s），文字留在剪貼簿", app or "?")
             self.job_overlay().flash("沒有輸入框：文字已複製，按 Ctrl+V 貼上", 4)
-        elif self.cfg.get("auto_learn", True) and polish:  # 從改字挑出新詞也要用修稿模型
+        elif self.cfg.get("auto_learn", True) and polish and not unpolished:  # 從改字挑出新詞也要用修稿模型
             threading.Thread(target=self.watch_edits, args=(result, self.session), daemon=True).start()
-        if unpolished and not keep:  # 不然使用者只會覺得「怎麼沒修好」，不知道是修稿模型沒回應
+        if unpolished and not no_input:  # 不然使用者只會覺得「怎麼沒修好」，不知道是修稿模型沒回應
             self.job_overlay().flash(f"未修稿：{unpolished}", 4)
         if self.cfg.get("history", True):
             try:
@@ -1520,7 +1553,7 @@ class VoiceInput:
             self._paste(text, keep)
 
     def _paste(self, text, keep=False):
-        """貼到游標位置後還原原本的剪貼簿；keep＝沒有輸入框，文字留在剪貼簿讓使用者自己貼。"""
+        """貼到游標位置；keep＝文字留在剪貼簿（設定開著，或沒有輸入框讓使用者自己貼），否則還原原本的剪貼簿。"""
         old = clip.snapshot()
         clip.set_text(text)
         ours = clip.sequence()

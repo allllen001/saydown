@@ -197,6 +197,7 @@ def run_window():
         current = "en" if cfg.get("translate", False) else ""
     translate = tk.StringVar(value=dict(TRANSLATE_TO).get(current, "不翻譯"))
     beep = tk.BooleanVar(value=cfg.get("beep", True))
+    keep_clip = tk.BooleanVar(value=cfg.get("keep_clipboard", True))
     keep = tk.BooleanVar(value=cfg.get("history", True))
     live = tk.BooleanVar(value=cfg.get("live_preview", True))
     learn = tk.BooleanVar(value=cfg.get("auto_learn", True))
@@ -207,6 +208,9 @@ def run_window():
     field.pack(side="left")
     box.bind("<<ComboboxSelected>>",
              lambda e: saved(translate_to={v: k for k, v in TRANSLATE_TO}[translate.get()]))
+    line = row(out, "留在剪貼簿")
+    glass.Toggle(line, keep_clip, lambda: saved(keep_clipboard=keep_clip.get())).pack(side="left")
+    tk.Label(line, text="說完的文字可到別處按 Ctrl+V 再貼", bg=PANEL, fg=MUTED, font=FONT).pack(side="left", padx=(12, 0))
     line = row(out, "提示音")
     glass.Toggle(line, beep, lambda: saved(beep=beep.get())).pack(side="left")
     line = row(out, "即時預覽")

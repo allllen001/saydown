@@ -11,6 +11,7 @@
     "right alt": "cleanup",
     "f10": "formal"
   },
+  "formal_combo": "f",
   "beep": true,
   "min_seconds": 0.4,
   "dictionary": [],

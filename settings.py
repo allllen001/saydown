@@ -23,6 +23,8 @@ MAIN_KEYS = [
     ("mouse middle", "滑鼠中鍵"),
 ]
 FORMAL_KEYS = [("", "不使用"), ("f10", "F10"), ("f9", "F9"), ("f8", "F8"), ("f11", "F11"), ("f12", "F12")]
+# 錄音中按住說話鍵再按這個鍵，就切成正式語氣
+FORMAL_COMBOS = [("", "不使用"), ("f", "說話鍵＋F"), ("tab", "說話鍵＋Tab"), ("enter", "說話鍵＋Enter")]
 TRANSLATE_TO = [("", "不翻譯"), ("en", "英文"), ("ja", "日文"), ("ko", "韓文"), ("vi", "越南文"), ("id", "印尼文"),
                 ("th", "泰文"), ("es", "西班牙文"), ("fr", "法文"), ("de", "德文")]
 DEVICES = [("auto", "自動"), ("cuda", "顯示卡（GPU）"), ("cpu", "CPU（較慢，用小模型）")]
@@ -153,6 +155,13 @@ def run_window():
     field, box = glass.combo(line, formal_var, [v for _, v in FORMAL_KEYS])
     field.pack(side="left")
     box.bind("<<ComboboxSelected>>", save_hotkeys)
+    combo = cfg.get("formal_combo", "f")
+    combo_var = tk.StringVar(value=dict(FORMAL_COMBOS).get(combo, f"說話鍵＋{combo.upper()}" if combo else "不使用"))
+    line = row(keys, "正式語氣組合")
+    field, box = glass.combo(line, combo_var, [v for _, v in FORMAL_COMBOS])
+    field.pack(side="left")
+    box.bind("<<ComboboxSelected>>",
+             lambda e: saved(formal_combo={v: k for k, v in FORMAL_COMBOS}.get(combo_var.get(), combo)))
 
     # ---- 辨識與修稿 ----
     engine = card("辨識與修稿")

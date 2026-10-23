@@ -611,6 +611,18 @@ MOUSE_KEYS = {"mouse x1", "mouse x2", "mouse middle"}
 RESERVED_KEYS = {"esc", "space"}  # 已經用在取消與 Ask
 
 
+def formal_combo_key(cfg):
+    """主鍵＋這個鍵＝切成正式語氣；空字串＝不使用。和快捷鍵、Esc、Space 撞到或鍵名無效時也不使用。"""
+    key = cfg.get("formal_combo", "f")
+    if not isinstance(key, str) or not key or key in RESERVED_KEYS or key in cfg.get("hotkeys", {}):
+        return ""
+    try:
+        keyboard.key_to_scan_codes(key)
+    except (ValueError, TypeError):
+        return ""
+    return key
+
+
 def invalid_hotkeys(hotkeys):
     """回傳設定不合法的鍵名；整份不合法時回傳 ["hotkeys"]。先驗證再換，避免換到一半快捷鍵全沒了。"""
     if not isinstance(hotkeys, dict) or not hotkeys:
@@ -689,6 +701,7 @@ class VoiceInput:
         self.keys_down = set()
         self.key_seen = {}  # 每個快捷鍵最後一次收到按下的時間
         self.space_held = False
+        self.combo_held = False
         self.mouse_hook = None
         self.reload_lock = threading.Lock()
         self.session = 0
@@ -721,6 +734,9 @@ class VoiceInput:
         keys = [f"{key_label(k)}={MODES[m]['label']}" for k, m in self.cfg["hotkeys"].items()]
         main = next((k for k, m in self.cfg["hotkeys"].items() if m == "cleanup"), None)
         if main:
+            combo = formal_combo_key(self.cfg)
+            if combo:
+                keys.append(f"{key_label(main)}＋{key_label(combo)}={MODES['formal']['label']}")
             keys.append(f"{key_label(main)}＋Space=Ask")
         return "　".join(keys)
 
@@ -884,6 +900,10 @@ class VoiceInput:
             self.mouse_hook = mousehook.start(mouse_keys, self.on_key)
         keyboard.hook_key("esc", self.on_esc, suppress=True)
         keyboard.hook_key("space", self.on_ask, suppress=True)
+        self.combo_held = False
+        combo = formal_combo_key(self.cfg)
+        if combo:
+            keyboard.hook_key(combo, self.on_formal_combo, suppress=True)
 
     def watch_config(self):
         beat = 0.0
@@ -1017,6 +1037,23 @@ class VoiceInput:
             self.locked = True  # Ask 直接進免持，放開按鍵後慢慢說，再按一次主鍵送出
             self.refresh_label()
             self.control.put(lambda: self.set_state("recording", "錄音中（Ask）"))
+        return False
+
+    def on_formal_combo(self, event):
+        """按住主鍵時再按組合鍵（預設 F），這段錄音改用正式語氣。和 Ask 不同，仍是放開主鍵就送出。"""
+        if self.combo_held:  # 切換用的那次按鍵，放開前的連發也一併吃掉
+            if event.event_type == keyboard.KEY_UP:
+                self.combo_held = False
+            return False
+        if (self.active_mode not in ("cleanup", "english", "formal") or self.active_key not in self.keys_down
+                or self.cfg["hotkeys"].get(self.active_key) != "cleanup" or not self.polishing()):
+            return True  # 不是按著主鍵錄音中、或沒有修稿模型可用時，這個鍵照常打字
+        if event.event_type == keyboard.KEY_DOWN:
+            self.combo_held = True
+            if self.active_mode != "formal":
+                self.active_mode = "formal"
+                self.refresh_label()
+                self.control.put(lambda: self.set_state("recording", f"錄音中（{MODES['formal']['label']}）"))
         return False
 
     def input_device(self):
@@ -1256,7 +1293,8 @@ class VoiceInput:
             if bad:
                 log.warning("快捷鍵設定有誤（%s），沿用原本的快捷鍵", "、".join(bad))
                 new["hotkeys"] = old_hotkeys
-            hotkeys_changed = new.get("hotkeys") != old_hotkeys
+            hotkeys_changed = (new.get("hotkeys") != old_hotkeys
+                               or new.get("formal_combo", "f") != self.cfg.get("formal_combo", "f"))
             whisper_changed = any(new.get(k) != self.cfg.get(k) for k in WHISPER_KEYS)
             polish_turned_on = polish_on(new) and not polish_on(self.cfg)
             self.cfg.update(new)

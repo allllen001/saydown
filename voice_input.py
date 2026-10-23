@@ -94,18 +94,24 @@ COMMON_RULES = """你是語音輸入法的文字整理工具。
 
 CLEANUP_RULES = """整理規則：
 1. 使用台灣繁體中文與台灣慣用語，標點用全形。
-2. 刪除口語贅詞（嗯、呃、那個、就是說、然後然後）與無意義的重複。
+2. 刪除口語贅詞（嗯、呃、那個、就是說、然後然後）、句尾多餘的「這樣」「這樣子」與無意義的重複。
 3. 說話者中途改口時，只保留最後的說法。
 4. 修正明顯的同音錯字。
-5. 內容明確列舉多個項目或步驟時，整理成條列。
+5. 只有說話者明確一項一項列舉（例如說了第一、第二）時才整理成條列；一般的敘述和連續提問保持原本的句子，不要拆成條列。
 6. 保留原本的意思與口吻，不新增內容、不刪減資訊、不擴寫。話沒說完就停在原處，不要猜測補完。
 7. 英文詞彙保持英文原文。
 8. 說話者說「換行」時在該處換一行，說「新段落」或「下一段」時在該處空一行開新段落；這些口令本身不要輸出。"""
 
+# 一般修稿與聊天語氣：意思講對就好，不要替使用者改成書面語（正式語氣模式不套用）
+KEEP_VOICE = (
+    "用字盡量沿用說話者的原話，只做最少的修改：不要換成書面語或更正式的說法，"
+    "不要自行加上「請」「此外」「即可」「是否」「其」這類字，不要把句子重組、合併或濃縮。意思對、讀得通就好。"
+)
+
 MODES = {
     "cleanup": {
         "label": "修稿",
-        "system": COMMON_RULES + "\n\n" + CLEANUP_RULES,
+        "system": COMMON_RULES + "\n\n" + CLEANUP_RULES + "\n9. " + KEEP_VOICE,
         "traditional": True,
     },
     "formal": {
@@ -130,7 +136,8 @@ MODES = {
         "system": COMMON_RULES
         + "\n\n"
         + CLEANUP_RULES
-        + "\n9. 這是即時通訊訊息：保留自然口語，句子簡短，最後一句結尾不加句號，不要條列。",
+        + "\n9. " + KEEP_VOICE
+        + "\n10. 這是即時通訊訊息：保留自然口語，句子簡短，最後一句結尾不加句號，不要條列。",
         "traditional": True,
     },
 }
@@ -189,6 +196,14 @@ EXAMPLE_OUTPUTS = {
     "formal": "可否請您協助查詢下週三的課表，並一併翻譯為英文？",
     "english": "Could you check next Wednesday's class schedule for me, and translate it into English as well?",
     "chat": "你可以幫我查一下下禮拜三的課表嗎？順便翻成英文",
+}
+
+# 示範：一般修稿沿用原話，不改成「請提供…」這類書面語
+VOICE_INPUT = "嗯你先把簡報的連結跟影片的連結在哪裡告訴我，然後我自己來看一下這樣子"
+VOICE_OUTPUTS = {
+    "cleanup": "你先把簡報的連結跟影片的連結在哪裡告訴我，然後我自己來看一下。",
+    "formal": "請先告知簡報與影片的連結位置，我再自行查看。",
+    "chat": "你先把簡報的連結跟影片的連結在哪裡告訴我，然後我自己來看一下",
 }
 
 EDIT_RULES = """你是文字編輯工具。使用者會給你兩段內容：
@@ -1357,6 +1372,8 @@ class VoiceInput:
                 {"role": "system", "content": system},
                 {"role": "user", "content": f"<原文>\n{EXAMPLE_INPUT}\n</原文>"},
                 {"role": "assistant", "content": EXAMPLE_OUTPUTS[mode]},
+                {"role": "user", "content": f"<原文>\n{VOICE_INPUT}\n</原文>"},
+                {"role": "assistant", "content": VOICE_OUTPUTS[mode]},
                 {"role": "user", "content": f"<原文>\n{CUT_INPUT}\n</原文>"},
                 {"role": "assistant", "content": CUT_OUTPUTS[mode]},
                 {"role": "user", "content": f"<原文>\n{text}\n</原文>"},

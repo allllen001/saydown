@@ -32,6 +32,9 @@ WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TOPMOST = 0x00000008
 SW_HIDE = 0
 SW_SHOWNOACTIVATE = 4
+HWND_TOPMOST = wintypes.HWND(-1)
+SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
+TOPMOST_REFRESH = 0.5  # 顯示中多久重新推回最上層一次（秒）
 ULW_ALPHA = 2
 AC_SRC_ALPHA = 1
 
@@ -133,6 +136,7 @@ class Overlay:
         self.cache = {}
         self.backdrop = None
         self.grabbed_at = 0.0
+        self.raised_at = 0.0
         self.live_backdrop = False  # 視窗能從截圖中排除時，才能邊顯示邊擷取背後畫面
         self.grabbing = False
         threading.Thread(target=self._run, daemon=True).start()
@@ -240,6 +244,14 @@ class Overlay:
             user32.SetWindowLongW(self.hwnd, GWL_EXSTYLE, style & ~WS_EX_LAYERED)
             user32.SetWindowLongW(self.hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
 
+    def _raise(self):
+        """推回所有視窗的最上層。只在啟動時設一次置頂不夠：瀏覽器、其他置頂程式
+        取得焦點後可能蓋過狀態列，所以顯示時和顯示期間都要重新設定。"""
+        self.raised_at = time.time()
+        user32.SetWindowPos(
+            self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        )
+
     def _tick(self):
         try:
             while True:
@@ -258,6 +270,8 @@ class Overlay:
                 else:
                     self._present(self.closing[1], 1 - ease(t))
             elif self.state != "hidden":
+                if time.time() - self.raised_at > TOPMOST_REFRESH:
+                    self._raise()
                 if self.live_backdrop and not self.grabbing and time.time() - self.grabbed_at > BLUR_REFRESH:
                     # 擷取＋模糊約 30 ms，放背景做，動畫才不會頓
                     self.grabbing = True
@@ -298,6 +312,7 @@ class Overlay:
             self.last_frame = self._draw()
             self._present(self.last_frame, 0)
             user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
+            self._raise()
 
     # ---------- 繪圖 ----------
 

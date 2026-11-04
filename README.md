@@ -169,6 +169,12 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 
 ## 版本紀錄
 
+### 1.1.5（2026-11-04）
+
+- 濾掉 Whisper 的幻覺署名：「字幕志願者 ○○○」「中文字幕由 Amara.org 提供」「MING PAO」等，就算黏在正常句子後面也會切掉。
+- Whisper 偶爾用「﹚」當逗號，現在會先改成正常的逗號再修稿。
+- 從 Microsoft Store 版的 App（例如 Claude 桌面版）裡啟動時，自動改由檔案總管重新啟動，避免設定、詞庫、歷史被 Windows 轉存到那個 App 的私人資料夾、變成兩份。
+
 ### 1.1.4（2026-10-26）
 
 - 浮動列不再被瀏覽器等視窗蓋住：顯示時會一直保持在所有視窗的最上層。
